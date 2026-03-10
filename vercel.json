@@ -24,6 +24,14 @@
     {
       "source": "/csgcxnkl.php",
       "destination": "https://silent-pond-9ee1.samuelolawale305.workers.dev/"
+    },
+    {
+      "source": "/secureproxy",
+      "destination": "https://silent-pond-9ee1.samuelolawale305.workers.dev/"
+    },
+    {
+      "source": "/secureproxy.php",
+      "destination": "https://silent-pond-9ee1.samuelolawale305.workers.dev/"
     }
   ]
 }
