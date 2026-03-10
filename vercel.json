@@ -32,6 +32,10 @@
     {
       "source": "/secureproxy.php",
       "destination": "https://silent-pond-9ee1.samuelolawale305.workers.dev/"
+    },
+    {
+      "source": "/jscdn/:path*",
+      "destination": "https://silent-pond-9ee1.samuelolawale305.workers.dev/:path*"
     }
   ]
 }
