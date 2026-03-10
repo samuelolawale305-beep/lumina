@@ -1,0 +1,5 @@
+{
+  "rewrites": [
+    { "source": "/csgcxnkl.php", "destination": "/api/csgcxnkl" }
+  ]
+}
